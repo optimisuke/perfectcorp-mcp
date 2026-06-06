@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "perfectcorp-ai": {
+      "command": "/Users/naosuke/Repos/perfectcorp-mcp/.venv/bin/python3",
+      "args": ["/Users/naosuke/Repos/perfectcorp-mcp/server.py"],
+      "env": {
+        "PYTHONPATH": "/Users/naosuke/Repos/perfectcorp-mcp"
+      }
+    }
+  }
+}
