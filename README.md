@@ -138,11 +138,37 @@ Claude が `analyze_skin_image` ツールを呼び出し、API レスポンス�
 
 ## 処理フロー
 
-```
-1. 画像ファイルを File API にアップロード → file_id を取得
-2. POST /s2s/v2.0/task/skin-analysis で分析タスクを作成 → task_id を取得
-3. GET /s2s/v2.0/task/skin-analysis/{task_id} を定期ポーリング
-4. task_status = "success" になったらレスポンスを返却
+```mermaid
+sequenceDiagram
+    actor User
+    participant Claude as Claude Code
+    participant MCP as server.py<br/>(MCP Server)
+    participant API as Perfect Corp API<br/>(yce-api-01)
+    participant S3 as Cloud Storage<br/>(presigned URL)
+
+    User->>Claude: 「この画像の肌を分析して」
+    Claude->>MCP: analyze_skin_image(image_path)
+
+    Note over MCP: バリデーション<br/>（存在確認・拡張子・サイズ）
+
+    MCP->>API: POST /s2s/v2.1/file/skin-analysis<br/>{ files: [{ content_type, file_name, file_size }] }
+    API-->>MCP: { file_id, requests: [{ method, url, headers }] }
+
+    MCP->>S3: PUT {presigned_url}<br/>（画像バイナリ）
+    S3-->>MCP: 200 OK
+
+    MCP->>API: POST /s2s/v2.1/task/skin-analysis<br/>{ file_id, dst_actions, format }
+    API-->>MCP: { task_id }
+
+    loop polling_interval ごとにポーリング
+        MCP->>API: GET /s2s/v2.1/task/skin-analysis/{task_id}
+        API-->>MCP: { task_status: "running" }
+    end
+
+    API-->>MCP: { task_status: "success", results: { ... } }
+
+    MCP-->>Claude: JSON レスポンス（加工なし）
+    Claude-->>User: 分析結果の解説
 ```
 
 ---
