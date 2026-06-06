@@ -1,234 +1,120 @@
-# Zenn 記事ノート: Perfect Corp AI × Claude Code MCP サーバ構築
+# Zenn 記事ノート: Mac のカメラで肌分析してみたら肌年齢50歳と言われた話
 
-## 記事コンセプト
+## 記事の方向性
 
-「Perfect Corp の AI Skin Analysis API を Claude Code から使えるようにする MCP サーバを Python で作った」
-
-顔写真を渡すと肌状態を分析してくれる API を、Claude Code のツールとして呼び出せるようにする。
-分析結果の解釈・要約は Claude 側に任せ、MCP サーバは API の橋渡しに徹するシンプルな設計。
+「試してみたら面白かった」がメイン。技術解説は薄め。
+一言で撮影〜分析が完結する体験と、結果にちょっとショックを受けた話。
 
 ---
 
-## やったこと（時系列）
+## 導入
 
-### 1. API ドキュメント調査
+Perfect Corp の AI Skin Analysis API を Claude Code から使えるようにする MCP サーバを作った。
 
-- Perfect Corp の docs サイト（docs.perfectcorp.com）は **JavaScript レンダリングの SPA** のため、WebFetch では本文を取得できなかった
-- ナビゲーション構造とページ URL パターンから各エンドポイントの URL を特定
-- `.md` 拡張子付き URL（例: `.../post.md`）にアクセスしたら API 仕様を取得できた
-
-取得できた情報:
-- ベース URL: `https://yce-api-01.perfectcorp.com`
-- 認証: `Authorization: Bearer {API_KEY}`
-- v2.1 の3エンドポイント仕様（後述）
-
-### 2. v2.0 と v2.1 の違い
-
-| 項目 | v2.0 | v2.1 |
-|---|---|---|
-| ファイルアップロード | multipart POST 1ステップ | presigned URL 2ステップ |
-| アップロード先 | `/s2s/v2.0/file` | `/s2s/v2.1/file/skin-analysis`（機能別） |
-| 分析項目指定 | なし | `dst_actions`（HD 16種 / SD 16種） |
-| HD/SD 混在 | — | エラー（どちらか一方のみ） |
-| ポーリング間隔 | 固定 | レスポンスの `polling_interval` を参照 |
-| エラーフィールド | `error_code` | `error` + `error_message` |
-| 最大解像度 | 1920px | 4096px |
-
-### 3. v2.1 ファイルアップロードのフロー（ハマりポイント）
-
-単純な multipart ではなく **2ステップ**:
-
-```
-Step 1: POST /s2s/v2.1/file/skin-analysis
-  Body: { files: [{ content_type, file_name, file_size }] }
-  Response: { files: [{ file_id, requests: [{ method, url, headers }] }] }
-
-Step 2: PUT {presigned_url}
-  Headers: Content-Type, Content-Length（レスポンスの headers をそのまま使う）
-  Body: 画像バイナリ
-  ※ Authorization ヘッダは不要（presigned URL に認証情報が埋め込まれている）
-```
-
-### 4. プロジェクト構成
-
-```
-perfectcorp-mcp/
-├── server.py                      # MCP ツール定義・バリデーション
-├── perfectcorp/
-│   ├── client.py                  # HTTP クライアント（認証・アップロード・ポーリング）
-│   └── apis/
-│       ├── skin_v21.py            # Skin Analysis v2.1
-│       ├── skin.py                # v2.0（参考用）
-│       ├── face.py                # スタブ（将来用）
-│       └── hair.py                # スタブ（将来用）
-├── tests/
-│   ├── test_server.py             # バリデーション・ハッピーパステスト
-│   └── test_skin_v21.py           # dst_actions バリデーションテスト
-├── .claude/settings.json          # このリポジトリ用 MCP 登録
-└── .env                           # API キー（git 管理外）
-```
-
-### 5. MCP ツールの設計
-
-```python
-@mcp.tool()
-async def analyze_skin_image(
-    image_path: str,
-    dst_actions: list[str] | None = None,  # デフォルト: HD 全16種
-    format: str = "json",                  # "json" or "zip"
-) -> str:
-    ...
-```
-
-- `dst_actions` を省略すると HD 全16種が使われる
-- `format="json"` にするとレスポンスに結果が直接入る（Claude が解釈しやすい）
-- `format="zip"` だとダウンロード URL が返ってくる
-
-### 6. Claude Code への MCP 登録方法
-
-**プロジェクトローカル**（`.claude/settings.json` を置くだけ）:
-```json
-{
-  "mcpServers": {
-    "perfectcorp-ai": {
-      "command": "/path/to/.venv/bin/python3",
-      "args": ["/path/to/server.py"],
-      "env": { "PYTHONPATH": "/path/to/perfectcorp-mcp" }
-    }
-  }
-}
-```
-→ そのディレクトリで `claude` を起動すると自動で読み込まれる
-
-**グローバル登録**（どこからでも使いたい場合）:
-```bash
-claude mcp add perfectcorp-ai \
-  /path/to/.venv/bin/python3 \
-  /path/to/server.py
-```
-
-### 7. テスト戦略
-
-API を呼ばずに検証できるテストを先に書く:
-
-- ファイルバリデーション（不存在・非対応拡張子・サイズ超過・不正 format）
-- dst_actions バリデーション（HD/SD 混在・不明な値）
-- ハッピーパス: `analyze_skin_v21` をモックして JSON が返ることを確認
-
-```bash
-PYTHONPATH=. .venv/bin/python3 -m pytest tests/ -v
-# 18 passed
-```
-
-### 8. 環境構築でハマった点
-
-- macOS デフォルトの Python は **3.9** → `mcp` パッケージは **3.10 以上**が必要
-- pyenv で 3.11 をインストール済みだったので、そちらで venv を作成:
-  ```bash
-  ~/.pyenv/versions/3.11.8/bin/python3.11 -m venv .venv
-  ```
+「カメラで写真撮って肌を分析して」と一言打つだけで、Mac のカメラが起動して顔を撮影し、AI が肌の状態をスコアリングしてくれる。
 
 ---
 
-## 使い方（記事のデモ用）
+## 実際のやり取り（ここそのまま貼る）
 
 ```
-# Claude Code を起動（このリポジトリ内）
-cd /path/to/perfectcorp-mcp
-claude
+❯ カメラで写真撮って肌を分析して
 
-# Claude Code 内で
-「この画像の肌を分析して: ~/Desktop/face.jpg」
+⏺ カメラで撮影して肌分析を行います。
+  Called perfectcorp-ai
+
+⏺ 顔が小さすぎてうまく検出できませんでした。カメラにもう少し近づいて、
+  顔が画面の大部分を占めるようにして、もう一度試してみてください。
+  準備ができたら「もう一度」と言っていただければ再撮影します。
+
+❯ もう一度
+
+⏺ 再撮影します。カメラに近づいた状態でお待ちください。
+  Called perfectcorp-ai
+
+⏺ 分析が完了しました。結果をまとめます。
+
+  肌分析レポート
+  総合スコア: 83.7 / 100
+  肌年齢: 50歳
+  肌タイプ: ノーマル
+
+  優れた項目 (90点以上)
+  皮脂・オイリー度 99 / 毛穴（額）99 / 赤み 97 / ニキビ 97 / シワ（額）97 ...
+
+  要注意な項目 (75点未満)
+  ほうれい線 70 / 目袋 71 / ハリ・弾力 72 / 上まぶたのたるみ 61（最も気になる部位）
+
+  まとめ・アドバイス
+  - 肌質全体はノーマルで安定しており、赤みやニキビは非常に良好
+  - 目元周り（上まぶたのたるみ・目袋）が最も気になるポイント
+  - アイクリームや十分な睡眠が効果的
+  - ほうれい線にはコラーゲン・レチノール配合スキンケアが有効
 ```
-
-Claude が自動で `analyze_skin_image` ツールを呼び出し、API レスポンスを受け取って解釈・要約してくれる。
 
 ---
 
-## 実際にAPIを叩いて判明したこと（ドキュメントとの差異）
+## 感想
 
-ドキュメントには書かれていなかったが、実際に叩いて分かったこと:
+**肌年齢50歳と言われた。**
 
-| 項目 | ドキュメント記載 | 実際 |
-|---|---|---|
-| レスポンス構造 | `{ file_id: ... }` | `{ status: 200, data: { file_id: ... } }` — 全エンドポイントが `data` でラップされる |
-| タスク作成のファイルID | `file_id` | `src_file_id` |
-| エラー内容 | `error_code` フィールド | `error` フィールドに `"('メッセージ', 'error_code')"` の文字列が入る |
+総合スコア83.7はなかなか良いのに、肌年齢だけ現実を突きつけられた。上まぶたのたるみ61点が特に刺さった。
 
-→ **ドキュメントを信じすぎず、実際にレスポンスを `print` して確認するのが一番早い**
+ただ、エラーが出て「カメラに近づいてください」と言われて近づいて「もう一度」と打つだけで再撮影してくれる体験は、思ったより自然だった。MCPサーバーはエラーをそのまま返しているだけで、Claude が勝手にいい感じに対話にしてくれている。
 
-## カメラ撮影ツールの追加（imagesnap）
+---
 
-`imagesnap` を使うと macOS のカメラを CLI から操作できる:
+## やったこと（技術概要）
+
+### 構成
+
+```
+Claude Code（チャット）
+    ↓ 「カメラで写真撮って分析して」
+MCP Server（Python）
+    ↓ imagesnap でカメラ撮影
+    ↓ Perfect Corp API にアップロード
+    ↓ 分析タスクを投げてポーリング
+    ↓ 結果 JSON をそのまま返す
+Claude Code（結果を解釈・要約）
+```
+
+MCP サーバーは API の橋渡しに徹して、結果の解釈・要約は Claude に任せる設計。
+
+### カメラ撮影は imagesnap
+
+Mac のカメラを CLI から操作できる `imagesnap` というツールを使った。
 
 ```bash
 brew install imagesnap
-imagesnap -w 2 photo.jpg  # 2秒ウォームアップ後に撮影
+imagesnap -w 3 photo.jpg  # 3秒後に撮影
 ```
 
-これを MCP ツールに組み込むと「カメラで写真撮って肌を分析して」の一言で完結する。
+これだけで FaceTime カメラから静止画が撮れる。
+
+### MCP ツールは2つ
 
 ```python
-@mcp.tool()
-async def capture_and_analyze_skin(...) -> str:
-    # imagesnap で撮影 → tempfile に保存 → analyze_skin_v21 → tempfile 削除
+analyze_skin_image(image_path)        # 既存の画像を分析
+capture_and_analyze_skin()            # 撮影 + 分析を一気にやる
 ```
 
-ポイント:
-- `-w 3` の3秒の間にカメラの前に座る必要がある
-- 顔が小さすぎると `error_src_face_too_small` が返る（カメラに近づく）
-- `save_path` を指定すると撮影した写真を手元に残せる
+### 面白かった設計の気づき
 
-## MCP 登録でハマったこと
-
-`.claude/settings.json` をリポジトリに置いただけでは読み込まれないことがある。
-`claude mcp add` コマンドで登録するのが確実:
-
-```bash
-claude mcp add perfectcorp-ai \
-  /path/to/.venv/bin/python3 \
-  /path/to/server.py
-```
-
-また、`claude mcp add` は `env` を渡せないため、`PYTHONPATH` 依存だとサーバーが起動しない。
-`server.py` の先頭で `sys.path.insert(0, str(Path(__file__).parent))` しておくと解決。
+MCPサーバーはエラーコードをそのまま返すだけでいい。
+「顔が小さすぎる」エラーをどう伝えるか、再試行をどう促すかは Claude が自分で考えてくれる。
+サーバー側でメッセージを作り込む必要がない。
 
 ---
 
-## 記事に入れたいポイント（ネタ候補）
+## リポジトリ
 
-- MCP サーバは「APIの薄いラッパー」として作るのが Claude との相性がいい（解釈は Claude に任せる）
-- Perfect Corp には公式 MCP サーバ（`mcp-api-01.makeupar.com/mcp`）が既に存在するが、自前で作ると dst_actions の制御や将来の拡張が自由
-- `.claude/settings.json` をリポジトリに置くだけで MCP がチーム共有できる
-- SPA ドキュメントは WebFetch で取れないことがある → `.md` URL パターンを試すと取れることがある
+https://github.com/optimisuke/perfectcorp-mcp
 
 ---
 
 ## 参考リンク
 
 - [Perfect Corp API Docs](https://docs.perfectcorp.com/reference/ai_skin_analysis)
+- [imagesnap](https://github.com/rharder/imagesnap)
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [FastMCP ドキュメント](https://gofastmcp.com/)
-- [今回作ったリポジトリ](https://github.com/optimisuke/perfectcorp-mcp)
-
----
-
-## 実際の動作デモ（記事用スクリーンショット候補）
-
-```
-❯ カメラで写真撮って肌を分析して
-→ エラー: 顔が小さすぎる（Claude が自動で説明・再試行を促す）
-
-❯ もう一度
-→ 分析完了
-
-総合スコア: 83.7 / 100
-肌年齢: 50歳
-肌タイプ: ノーマル
-
-優れた項目: 皮脂99 / 毛穴(額)99 / 赤み97 / ニキビ97 ...
-要注意: 上まぶたのたるみ 61点
-```
-
-ポイント: エラー時も Claude が自然に会話で対処して再試行してくれる。
-MCP サーバーはエラーをそのまま返すだけで、ハンドリングは Claude 側が行う。
