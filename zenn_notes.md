@@ -145,6 +145,56 @@ Claude が自動で `analyze_skin_image` ツールを呼び出し、API レス�
 
 ---
 
+## 実際にAPIを叩いて判明したこと（ドキュメントとの差異）
+
+ドキュメントには書かれていなかったが、実際に叩いて分かったこと:
+
+| 項目 | ドキュメント記載 | 実際 |
+|---|---|---|
+| レスポンス構造 | `{ file_id: ... }` | `{ status: 200, data: { file_id: ... } }` — 全エンドポイントが `data` でラップされる |
+| タスク作成のファイルID | `file_id` | `src_file_id` |
+| エラー内容 | `error_code` フィールド | `error` フィールドに `"('メッセージ', 'error_code')"` の文字列が入る |
+
+→ **ドキュメントを信じすぎず、実際にレスポンスを `print` して確認するのが一番早い**
+
+## カメラ撮影ツールの追加（imagesnap）
+
+`imagesnap` を使うと macOS のカメラを CLI から操作できる:
+
+```bash
+brew install imagesnap
+imagesnap -w 2 photo.jpg  # 2秒ウォームアップ後に撮影
+```
+
+これを MCP ツールに組み込むと「カメラで写真撮って肌を分析して」の一言で完結する。
+
+```python
+@mcp.tool()
+async def capture_and_analyze_skin(...) -> str:
+    # imagesnap で撮影 → tempfile に保存 → analyze_skin_v21 → tempfile 削除
+```
+
+ポイント:
+- `-w 3` の3秒の間にカメラの前に座る必要がある
+- 顔が小さすぎると `error_src_face_too_small` が返る（カメラに近づく）
+- `save_path` を指定すると撮影した写真を手元に残せる
+
+## MCP 登録でハマったこと
+
+`.claude/settings.json` をリポジトリに置いただけでは読み込まれないことがある。
+`claude mcp add` コマンドで登録するのが確実:
+
+```bash
+claude mcp add perfectcorp-ai \
+  /path/to/.venv/bin/python3 \
+  /path/to/server.py
+```
+
+また、`claude mcp add` は `env` を渡せないため、`PYTHONPATH` 依存だとサーバーが起動しない。
+`server.py` の先頭で `sys.path.insert(0, str(Path(__file__).parent))` しておくと解決。
+
+---
+
 ## 記事に入れたいポイント（ネタ候補）
 
 - MCP サーバは「APIの薄いラッパー」として作るのが Claude との相性がいい（解釈は Claude に任せる）
@@ -160,3 +210,25 @@ Claude が自動で `analyze_skin_image` ツールを呼び出し、API レス�
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 - [FastMCP ドキュメント](https://gofastmcp.com/)
 - [今回作ったリポジトリ](https://github.com/optimisuke/perfectcorp-mcp)
+
+---
+
+## 実際の動作デモ（記事用スクリーンショット候補）
+
+```
+❯ カメラで写真撮って肌を分析して
+→ エラー: 顔が小さすぎる（Claude が自動で説明・再試行を促す）
+
+❯ もう一度
+→ 分析完了
+
+総合スコア: 83.7 / 100
+肌年齢: 50歳
+肌タイプ: ノーマル
+
+優れた項目: 皮脂99 / 毛穴(額)99 / 赤み97 / ニキビ97 ...
+要注意: 上まぶたのたるみ 61点
+```
+
+ポイント: エラー時も Claude が自然に会話で対処して再試行してくれる。
+MCP サーバーはエラーをそのまま返すだけで、ハンドリングは Claude 側が行う。
