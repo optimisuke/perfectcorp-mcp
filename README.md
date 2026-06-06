@@ -9,6 +9,36 @@ Perfect Corp AI APIs を Claude Code から呼び出すための MCP サーバ�
 - Face Analysis
 - Hair Analysis
 
+## アーキテクチャ
+
+```
+Claude Code
+    │  MCP (stdio)
+    ▼
+server.py                  ← FastMCP ツール定義・入力バリデーション
+    │
+    ▼
+perfectcorp/apis/skin_v21.py  ← v2.1 ワークフロー (dst_actions 管理)
+    │
+    ▼
+perfectcorp/client.py      ← HTTP クライアント (認証・アップロード・ポーリング)
+    │
+    ├─ POST /s2s/v2.1/file/skin-analysis  → presigned URL + file_id
+    ├─ PUT  {presigned_url}               → ファイルアップロード
+    ├─ POST /s2s/v2.1/task/skin-analysis  → task_id
+    └─ GET  /s2s/v2.1/task/skin-analysis/{task_id}  → 結果 (ポーリング)
+```
+
+| レイヤー | ファイル | 責務 |
+|---|---|---|
+| MCP ツール | `server.py` | ツール定義・入力バリデーション・JSON シリアライズ |
+| API モジュール | `perfectcorp/apis/skin_v21.py` | v2.1 フロー・dst_actions バリデーション |
+| HTTP クライアント | `perfectcorp/client.py` | 認証・2段階アップロード・非同期ポーリング |
+
+新しい API を追加する場合は `perfectcorp/apis/` にモジュールを追加し、`server.py` に `@mcp.tool()` を追記するだけです。
+
+---
+
 ## セットアップ
 
 ### 1. リポジトリをクローン / 移動
