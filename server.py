@@ -1,10 +1,19 @@
+import asyncio
 import json
+import shutil
+import sys
+import tempfile
 from pathlib import Path
+
+# Ensure the repo root is on sys.path regardless of how the server is launched
+sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 
 from perfectcorp.apis.skin_v21 import HD_ACTIONS, SD_ACTIONS, analyze_skin_v21
 from perfectcorp.client import PerfectCorpClient
+
+_IMAGESNAP = shutil.which("imagesnap") or "/opt/homebrew/bin/imagesnap"
 
 mcp = FastMCP(
     "perfectcorp-ai",
@@ -70,6 +79,69 @@ async def analyze_skin_image(
         format=format,
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def capture_and_analyze_skin(
+    dst_actions: list[str] | None = None,
+    warmup_seconds: float = 2.0,
+    save_path: str | None = None,
+) -> str:
+    """Capture a photo from the Mac's FaceTime camera and analyze skin condition in one step.
+
+    Takes a photo using imagesnap, sends it to Perfect Corp AI Skin Analysis API v2.1,
+    and returns the raw JSON response. The caller is responsible for interpreting the results.
+
+    Args:
+        dst_actions: Analysis features to run (HD or SD tier, cannot mix).
+                     Defaults to all 16 HD features when omitted.
+        warmup_seconds: Seconds to wait for the camera to warm up before capturing.
+                        Default 2.0. Increase if the image comes out dark.
+        save_path: Optional path to save the captured photo (e.g. ~/Desktop/skin.jpg).
+                   If omitted the photo is stored in a temp file and deleted after analysis.
+
+    Returns:
+        Raw API response as a JSON string.
+    """
+    if not Path(_IMAGESNAP).exists():
+        raise FileNotFoundError(
+            "imagesnap not found. Install it with: brew install imagesnap"
+        )
+
+    if save_path:
+        photo_path = Path(save_path).expanduser().resolve()
+        photo_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dir = None
+    else:
+        tmp_dir = tempfile.mkdtemp()
+        photo_path = Path(tmp_dir) / "capture.jpg"
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _IMAGESNAP, "-w", str(warmup_seconds), str(photo_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=warmup_seconds + 15)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"imagesnap failed: {stderr.decode().strip()}")
+        if not photo_path.exists() or photo_path.stat().st_size == 0:
+            raise RuntimeError("imagesnap ran but produced no output file.")
+
+        client = PerfectCorpClient()
+        result = await analyze_skin_v21(
+            client,
+            str(photo_path),
+            dst_actions=dst_actions,
+        )
+
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    out = {"captured_photo": save_path or "(temp, deleted)", **result}
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 def main() -> None:

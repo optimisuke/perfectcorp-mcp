@@ -80,7 +80,7 @@ async def analyze_skin_v21(
     task_id = await client.create_task(
         TASK_ENDPOINT,
         {
-            "file_id": file_id,
+            "src_file_id": file_id,
             "dst_actions": list(dst_actions),
             "format": format,
         },

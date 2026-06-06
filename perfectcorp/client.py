@@ -74,7 +74,7 @@ class PerfectCorpClient:
                 },
             )
             _raise_for_status(response)
-            file_info = response.json()["files"][0]
+            file_info = response.json()["data"]["files"][0]
 
         file_id: str = file_info["file_id"]
         upload_req: dict = file_info["requests"][0]
@@ -98,7 +98,7 @@ class PerfectCorpClient:
         async with httpx.AsyncClient(base_url=BASE_URL, headers=self._headers, timeout=30.0) as client:
             response = await client.post(endpoint, json=payload)
         _raise_for_status(response)
-        return response.json()["task_id"]
+        return response.json()["data"]["task_id"]
 
     async def poll_task(self, endpoint: str, task_id: str) -> dict:
         """Poll until task_status is 'success' or 'error', then return the full response.
@@ -110,14 +110,14 @@ class PerfectCorpClient:
             for _ in range(MAX_POLL_RETRIES):
                 response = await client.get(f"{endpoint}/{task_id}")
                 _raise_for_status(response)
-                data = response.json()
+                body = response.json()
+                data = body.get("data", body)  # v2.1 wraps payload under "data"
                 status = data.get("task_status")
 
                 if status == "success":
                     return data
 
                 if status == "error":
-                    # v2.1 uses "error"; v2.0 uses "error_code"
                     code = data.get("error") or data.get("error_code") or "unknown_internal_error"
                     msg = data.get("error_message", "")
                     detail = f": {msg}" if msg else ""
